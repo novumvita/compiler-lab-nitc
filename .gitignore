@@ -1,2 +1,7 @@
 *.o
 *.hi
+*.txt
+Grammar.hs
+Link.hs
+Tokens.hs
+Compiler
