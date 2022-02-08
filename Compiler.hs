@@ -1,15 +1,18 @@
 {-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Main where
-import Grammar
+import Grammar(parseTokens)
 import Tokens
+import SymbolTable
+import SyntaxTree
 
 import Link (replaceLabels)
 import Data.List
 import Data.Maybe
-
 import Data.Tree
-
 import Data.Tuple
+import Data.Map
+import ParserState
+import Control.Monad
 
 data Tree a b c = EmptyNode
             | Node a b c [ Main.Tree a b c ]
@@ -17,254 +20,174 @@ data Tree a b c = EmptyNode
 
 data State = State {
     registers :: [Bool],
-    labels :: [Bool],
-    variables :: [(String, (Int, [Int], String))],    --(mem, size, typ)
+    labels :: Int,
+    gSymbolTable :: Map String Symbol,
+    lSymbolTable :: Map String Symbol,
     breakLabel :: Int,
     continueLabel :: Int,
-    inLoop :: Bool
+    inLoop :: Bool,
+    code :: String
 } deriving Show
 
-makeTreeStmt :: Stmt -> Main.Tree Int String String
-
-makeTreeStmt (Read exp)                     = Main.Node 0 "IO" "READ" [makeTreeExp exp]
-
-makeTreeStmt (Write exp)                    = Main.Node 0 "IO" "WRITE" [makeTreeExp exp]
-
-makeTreeStmt (Assg e1 e2)                   = if checkType left ["VAR"]
-                                              then Main.Node 0 "ASSG" "ASSG" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeStmt (If exp slist)                 = if checkType left ["BOOL"]
-                                              then Main.Node 0 "FLOW" "IF" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp exp
-                                                    right = makeTreeSList slist
-
-makeTreeStmt (IfElse exp islist eslist)     = if checkType left ["BOOL"]
-                                              then Main.Node 0 "FLOW" "IFELSE" [left, middle, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp exp
-                                                    middle = makeTreeSList islist
-                                                    right = makeTreeSList eslist
-
-makeTreeStmt (While exp slist)              = if checkType left ["BOOL"]
-                                              then Main.Node 0 "FLOW" "WHILE" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp exp
-                                                    right = makeTreeSList slist
-
-makeTreeStmt Break                          = Main.Node 0 "FLOW" "BREAK" []
-
-makeTreeStmt Continue                       = Main.Node 0 "FLOW" "CONTINUE" []
+translateOp :: String -> String
+translateOp op = case op of
+    "+" -> "ADD"
+    "-" -> "SUB"
+    "*" -> "MUL"
+    "/" -> "DIV"
+    "<" -> "LT"
+    ">" -> "GT"
+    "<=" -> "LE"
+    ">=" -> "GE"
+    "!=" -> "NE"
+    "==" -> "EQ"
 
 
-makeTreeSList :: SList -> Main.Tree Int String String
+getMem :: Node -> State -> IO (State, Int)
 
-makeTreeSList []                = Main.Node 0 "" "" []
-
-makeTreeSList [a]               = makeTreeStmt a
-
-makeTreeSList [a, DeclStmt _]   = makeTreeStmt a
-
-makeTreeSList [a, b]            = Main.Node 0 "" "CONNECTOR" [makeTreeStmt a, makeTreeStmt b]
-
-makeTreeSList (x:xs)            = Main.Node 0 "" "CONNECTOR" [makeTreeStmt x, makeTreeProgram (ProgramStart xs)]
-
-
-makeTreeProgram :: Program -> Main.Tree Int String String
-
-makeTreeProgram (ProgramStart slist)    = makeTreeSList slist
-
-makeTreeProgram EmptyProgram            = Main.Node 0 "" "" []
-
-
-checkType :: Main.Tree Int String String  -> [String] -> Bool
-
-checkType (Main.Node _ _ a _) b = a `elem` b
-
-checkType _ _ = False
-
-
-makeTreeExp :: Exp -> Main.Tree Int String String
-
-makeTreeExp (Num v)                         = Main.Node v "" "INT" []
-
-makeTreeExp (Val (VarExp v))                = Main.Node 0 v "VAR" []
-
-makeTreeExp (Val (VarExpArray v count))     = Main.Node a b c (children ++ [makeTreeExp count])
-                                            where (Main.Node a b c children ) = expTree
-                                                  expTree = makeTreeExp (Val v)
-
-makeTreeExp (Pointer var)                   = Main.Node 0 "PTR" "VAR" [makeTreeExp (Val var)]
-
-makeTreeExp (Mem var)                       = Main.Node 0 "MEM" "VAR" [makeTreeExp (Val var)]
-
-makeTreeExp (Str v)                         = Main.Node 0 v "STR" []
-
-makeTreeExp (Plus e1 e2)                    = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "ADD" "INT" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (Minus e1 e2)                   = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "SUB" "INT" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (Times e1 e2)                   = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "MUL" "INT" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (Div e1 e2)                     = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "DIV" "INT" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (LessThan e1 e2)                = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "LT" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (GreaterThan e1 e2)             = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "GT" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (LessThanEq e1 e2)              = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "LE" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (GreaterThanEq e1 e2)           = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "GE" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (NotEq e1 e2)                   = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "NE" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
-makeTreeExp (Eq e1 e2)                      = if checkType left ["INT", "VAR"] && checkType right ["INT", "VAR"]
-                                              then Main.Node 0 "EQ" "BOOL" [left, right]
-                                              else error "Type Error"
-                                              where left = makeTreeExp e1
-                                                    right = makeTreeExp e2
-
--- should be 4096       
-allocMem :: (String, [Int]) -> String -> State -> State
-allocMem (var, num) typ (State a b [] c d e) = State a b [(var, (5000, num, typ))] c d e
-allocMem (var, num) typ (State a b varlist c d e) = State a b (varlist ++ [(var, (mem, num, typ))]) c d e
-                    where mem = base + product size
-                          (base, size, _) = snd $ last varlist
-
-getMem :: Main.Tree Int String String -> State -> IO (State, Int)
-
-getMem (Main.Node 0 v "VAR" []) state = do
+getMem (NodeVar var) state = do
     let (newstate, reg) = getReg state
-    appendNewLine $ "MOV R" ++ show reg ++ ", " ++ show mem
+    case sym of
+        LVariable _ lbinding -> do
+            appendNewLine $ "MOV R" ++ show reg ++ ", BP"
+            appendNewLine $ "ADD R" ++ show reg ++ ", " ++ show lbinding
+        Variable _ _ gbinding -> do
+            appendNewLine $ "MOV R" ++ show reg ++ ", " ++ show gbinding
     return (newstate, reg)
-    where (mem, _, _) = fromJust $ lookup v varlist
-          (State a b varlist c d e) = state
-              
-getMem (Main.Node 0 "PTR" "VAR" [child]) state = evalExp child state
+    where sym = fromMaybe gLookup $ Data.Map.lookup var lvarlist
+          gLookup = fromMaybe (error var) $ Data.Map.lookup var gvarlist
+          (State a b gvarlist lvarlist c d e f) = state
 
-getMem (Main.Node 0 v "VAR" [child]) state = do
-    let (mem, _, _) = fromJust $ lookup v varlist
-    let (newstate, reg) = getReg state
-    (newstate1, index) <- evalExp child newstate
-    appendNewLine $ "MOV R" ++ show reg ++ ", " ++ show mem
-    appendNewLine $ "ADD R" ++ show reg ++ ", R" ++ show index
-    let newstate2 = freeReg newstate1
-    return (newstate2, reg)
-    where (State a b varlist c d e) = state
+getMem (NodePtr child) state = evalExp child state
 
-getMem (Main.Node 0 v "VAR" children) state = do
-    let (mem, sizes, _) = fromJust $ lookup v varlist
+getMem (NodeArray var indexes) state = do
+    let sym = varlist ! var
     let (newstate, reg) = getReg state
-    (indexRegs, newstate1) <- evalIndexes children [] newstate
+    (indexRegs, newstate1) <- evalIndexes indexes [] newstate
     appendNewLine $ "MOV R" ++ show reg ++ ", 0"
-    newstate2 <- findOffset reg sizes indexRegs newstate1
-    appendNewLine $ "ADD R" ++ show reg ++ ", " ++ show mem
+    newstate2 <- findOffset reg (varSize sym) indexRegs newstate1
+    appendNewLine $ "ADD R" ++ show reg ++ ", " ++ show (varBinding sym)
     return (newstate2, reg)
-    where (State a b varlist c d e) = state
+    where (State a b varlist z c d e f) = state
 
 switchOn :: [Bool] -> Int -> [Bool]
-switchOn list index = take index list ++ True : drop (index + 1) list
+switchOn list index = Data.List.take index list ++ True : Data.List.drop (index + 1) list
 
 switchOff :: [Bool] -> Int -> [Bool]
-switchOff list index = take index list ++ False : drop (index + 1) list
+switchOff list index = Data.List.take index list ++ False : Data.List.drop (index + 1) list
 
 getReg :: State -> (State, Int)
-getReg (State registers a b c d e) = (State (switchOn registers reg) a b c d e, reg)
+getReg (State registers a b z c d e f) = (State (switchOn registers reg) a b z c d e f, reg)
                    where reg = fromJust (elemIndex False registers)
 
+lastUsedReg :: State -> Int
+lastUsedReg (State registers a b z c d e f) = case elemIndex False registers of
+    Just f -> f - 1
+    Nothing -> 20
+
 freeReg :: State -> State
-freeReg (State registers a b c d e) = State (reverse (switchOff revregisters reg)) a b c d e
+freeReg (State registers a b c z d e f) = State (reverse (switchOff revregisters reg)) a b c z d e f
                     where reg = fromJust (elemIndex True revregisters)
                           revregisters = reverse registers
 
 getLabel :: State -> (State, Int)
-getLabel (State a labels b c d e) = (State a (switchOn labels label) b c d e, label)
-                   where label = fromJust (elemIndex False labels)
+getLabel (State a label b z c d e f) = (State a (label+1) b z c d e f, label)
 
 startLoop :: State -> State
-startLoop (State a b c d e _) = State a b c d e True
+startLoop (State a b c z d e _ f) = State a b c z d e True f
 
 endLoop :: State -> State
-endLoop (State a b c d e _) = State a b c d e False
+endLoop (State a b c z d e _ f) = State a b c z d e False f
 
 setLabels :: State -> Int -> Int -> State
-setLabels (State a b c d e f) label1 label2 = State a b c label1 label2 f
+setLabels (State a b c z d e f g) label1 label2 = State a b c z label1 label2 f g
 
-evalExp :: Main.Tree Int String String -> State -> IO (State, Int)
+evalExp :: Node -> State -> IO (State, Int)
 
-evalExp (Main.Node v "" "INT" [])  state = do
-    appendNewLine ("MOV R" ++  show reg ++ ", " ++ show v)
+evalExp (NodeInt val)  state = do
+    appendNewLine ("MOV R" ++  show reg ++ ", " ++ show val)
     return (newstate, reg)
     where (newstate, reg) = getReg state
 
-evalExp (Main.Node 0 v "STR" []) state = do
-    appendNewLine ("MOV R" ++  show reg ++ ", " ++ v)
+evalExp (NodeStr val) state = do
+    appendNewLine ("MOV R" ++  show reg ++ ", " ++ val)
     return (newstate, reg)
     where (newstate, reg) = getReg state
 
-evalExp (Main.Node _ "PTR" _ child) state = do
+evalExp (NodePtr child) state = do
     let (newstate, reg) = getReg state
-    (newstate1, childreg) <- evalExp (head child) newstate
+    (newstate1, childreg) <- evalExp child newstate
     appendNewLine $ "MOV R" ++ show reg ++ ", [R" ++ show childreg ++ "]"
     let newstate2 = freeReg newstate1
     return (newstate2, reg)
 
-evalExp (Main.Node _ "MEM" _ child) state = getMem (head child) state
+evalExp (NodeRef child) state = getMem child state
 
-evalExp (Main.Node 0 v "VAR" children) state = do
+
+evalExp (NodeOp op leftNode rightNode) state = do
+    (lstate, leftVal) <- evalExp leftNode state
+    (rstate, rightVal) <- evalExp rightNode lstate
+    appendNewLine (translateOp op ++ " R" ++ show leftVal ++ ", R" ++ show rightVal)
+    let newstate = freeReg rstate
+    return (newstate, leftVal)
+
+evalExp (NodeBool op leftNode rightNode) state = do
+    (lstate, leftVal) <- evalExp leftNode state
+    (rstate, rightVal) <- evalExp rightNode lstate
+    appendNewLine (translateOp op ++ " R" ++ show leftVal ++ ", R" ++ show rightVal)
+    let newstate = freeReg rstate
+    return (newstate, leftVal)
+
+evalExp (NodeFnCall name args) state = do
+    pushRegs state
+    pushArgs (reverse args) state {registers = replicate 20 False}
+    appendNewLine "PUSH R0"
+    appendNewLine $ "CALL F" ++ show (funcLabel (gSymbolTable state ! name))
+    appendNewLine $ "POP R" ++ show reg
+    popArgs (length args)
+    popRegs state
+    return (newstate, reg)
+    where (newstate,reg) = getReg state
+
+evalExp var state = do
     let (newstate, reg) = getReg state
-    (newstate1, memreg) <- getMem (Main.Node 0 v "VAR" children) newstate
+    (newstate1, memreg) <- getMem var newstate
     appendNewLine ("MOV R" ++  show reg ++ ", [R" ++ show memreg ++ "]")
     let newstate2 = freeReg newstate1
     return (newstate2, reg)
 
-evalExp (Main.Node _ op _ [leftNode, rightNode]) state = do
-    (lstate, leftVal) <- evalExp leftNode state
-    (rstate, rightVal) <- evalExp rightNode lstate
-    appendNewLine (op ++ " R" ++ show leftVal ++ ", R" ++ show rightVal)
-    let newstate = freeReg rstate
-    return (newstate, leftVal)
+pushArgs :: [Node] -> State -> IO State
 
-evalIndexes :: [Main.Tree Int String String] -> [Int] -> State -> IO ([Int], State)
+pushArgs [] state = return state
+
+pushArgs args state = do
+    (_, reg) <- case args of
+        [arg] ->  evalExp arg state
+        args ->  evalExp (last args) state
+    appendNewLine $ "PUSH R" ++ show reg
+    pushArgs (init args) state
+
+popArgs :: Int -> IO ()
+popArgs n = case n of
+    0 -> return ()
+    x -> do
+         popReg 0
+         popArgs (x - 1) 
+
+popReg :: Int -> IO()
+popReg reg = appendNewLine $ "POP R" ++ show reg
+
+pushReg :: Int -> IO()
+pushReg reg = appendNewLine $ "PUSH R" ++ show reg
+
+popRegs :: State -> IO()
+popRegs state = mapM_ popReg (elemIndices True (registers state))
+
+pushRegs :: State -> IO()
+pushRegs state = mapM_ pushReg (reverse (elemIndices True (registers state)))
+
+
+evalIndexes :: [Node] -> [Int] -> State -> IO ([Int], State)
 
 evalIndexes (leftChild : rest) indexes state = do
     (lstate, leftReg) <- evalExp leftChild state
@@ -273,36 +196,35 @@ evalIndexes (leftChild : rest) indexes state = do
 evalIndexes [] indexes state = do return (indexes, state)
 
 findOffset :: Int -> [Int] -> [Int] -> State -> IO State
-findOffset reg (firstsize:sizes) (firstindex:indexRegs) state = do
+findOffset reg (firstsize : sizes) (firstindex:indexRegs) state = do
     appendNewLine $ "MUL R" ++ show firstindex ++ ", " ++ show firstsize
     appendNewLine $ "ADD R" ++ show reg ++ ", R" ++ show firstindex
     let newstate = freeReg state
     findOffset reg sizes indexRegs newstate
-    where (State registers b varlist c d e) = state
-
+    where (State registers b varlist z c d e f) = state
 findOffset _ _ _ state = do return state
 
 
-evalStmt :: Main.Tree Int String String -> State -> IO State
+evalStmt :: Node -> State -> IO State
 
-evalStmt (Main.Node _ _ "ASSG" [Main.Node u v "VAR" children, rightNode]) state = do
-    (newstate, memreg) <- getMem (Main.Node u v "VAR" children) state
+evalStmt (NodeAssg leftNode rightNode) state = do
+    (newstate, memreg) <- getMem leftNode state
     (rstate, rightVal) <- evalExp rightNode newstate
     appendNewLine $ "MOV [R" ++ show memreg ++ "], R" ++ show rightVal
     let newstate3 = freeReg rstate
     let newstate4 = freeReg newstate3
     return newstate4
-    where (State a b varlist c d e) = state
+    where (State a b varlist z c d e f) = state
 
-evalStmt (Main.Node _ _ "IF" [leftNode, rightNode]) state = do
+evalStmt (NodeIf leftNode middleNode (NodeConnector [])) state = do
     let (newstate, label) = getLabel state
     (lstate, leftVal) <- evalExp leftNode newstate
     appendNewLine $ "JZ R" ++ show leftVal ++ ", L" ++ show label
-    rstate <- evalStmt rightNode lstate
+    rstate <- evalStmt middleNode lstate
     appendNewLine $ "L" ++ show label ++ ":"
     return rstate
 
-evalStmt (Main.Node _ _ "IFELSE" [leftNode, middleNode, rightNode]) state = do
+evalStmt (NodeIf leftNode middleNode rightNode) state = do
     (lstate, leftVal) <- evalExp leftNode state
     let (lstate1, label1) = getLabel lstate
     let (lstate2, label2) = getLabel lstate1
@@ -314,7 +236,7 @@ evalStmt (Main.Node _ _ "IFELSE" [leftNode, middleNode, rightNode]) state = do
     appendNewLine $ "L" ++ show label2 ++ ":"
     return res
 
-evalStmt (Main.Node _ _ "WHILE" [leftNode, rightNode]) state = do
+evalStmt (NodeWhile leftNode rightNode) state = do
     let (state1, label1) = getLabel state
     appendNewLine $ "L" ++ show label1 ++ ":"
     let state2 = startLoop state1
@@ -332,8 +254,8 @@ evalStmt (Main.Node _ _ "WHILE" [leftNode, rightNode]) state = do
     let newstate2 = setLabels newstate1 oldBLabel oldCLabel
     return newstate2
 
-evalStmt (Main.Node _ _ "READ" [Main.Node a v "VAR" children]) state = do
-    (newstate, memreg) <- getMem (Main.Node a v "VAR" children) state
+evalStmt (NodeRead var) state = do
+    (newstate, memreg) <- getMem var state
     let (newstate1, reg) = getReg newstate
     appendNewLine $ "MOV R" ++ show reg ++ ", 7"
     appendNewLine $ "PUSH R" ++ show reg
@@ -353,7 +275,7 @@ evalStmt (Main.Node _ _ "READ" [Main.Node a v "VAR" children]) state = do
     let newstate3 = freeReg newstate2
     return newstate3
 
-evalStmt (Main.Node _ _ "WRITE" [node]) state = do
+evalStmt (NodeWrite node) state = do
     (newstate, val) <- evalExp node state
     let (newstate1, reg) = getReg newstate
     appendNewLine $ "MOV R" ++ show reg ++ ", 5"
@@ -374,79 +296,81 @@ evalStmt (Main.Node _ _ "WRITE" [node]) state = do
     let newstate3 = freeReg newstate2
     return newstate3
 
-evalStmt (Main.Node _ _ "BREAK" _) (State a b c breakLabel d True) = do
+evalStmt NodeBreak (State a b c z breakLabel d True f) = do
     appendNewLine $ "JMP L" ++ show breakLabel
-    return (State a b c breakLabel d True)
+    return (State a b c z breakLabel d True f)
 
-evalStmt (Main.Node _ _ "BREAK" _) (State a b c d e False) = do
-    return (State a b c d e False)
+evalStmt NodeBreak (State a b c z d e False f) = do
+    return (State a b c z d e False f)
 
-evalStmt (Main.Node _ _ "CONTINUE" _) (State a b c d continueLabel True) = do
+evalStmt NodeContinue  (State a b c z d continueLabel True f) = do
     appendNewLine $ "JMP L" ++ show continueLabel
-    return (State a b c continueLabel d True)
+    return (State a b c z continueLabel d True f)
 
-evalStmt (Main.Node _ _ "CONTINUE" _) (State a b c d e False) = do
-    return (State a b c d e False)
+evalStmt NodeContinue (State a b c z d e False f) = do
+    return (State a b c z d e False f)
 
-evalStmt (Main.Node a b c [leftNode, rightNode]) state = do
-    newstate <- evalStmt rightNode state
-    evalStmt leftNode newstate
+evalStmt (NodeConnector []) state = return state
 
+evalStmt (NodeConnector stmts) state = foldM (flip evalStmt) state stmts
 
-toDataTree :: Main.Tree Int String String -> Data.Tree.Tree [Char]
-toDataTree EmptyNode = Data.Tree.Node "LEAF" []
-toDataTree (Main.Node a b c d) = Data.Tree.Node (show a ++ show b ++ show c) (map toDataTree d)
-
-codeGen :: Main.Tree Int String String -> State -> IO ()
-codeGen ast state = do
+mainCodeGen :: Node -> State -> Int -> IO ()
+mainCodeGen node state sp = do
     writeFile "file.txt" "0\n2056\n0\n0\n0\n0\n0\n0\n"
-    evalStmt ast state
-    appendFile "file.txt" "INT 10"
+    appendNewLine $ "MOV SP, " ++ show sp
+    appendNewLine "BRKP"
+    appendNewLine "MOV BP, SP"
+    appendNewLine $ "ADD SP, " ++ show lVarCount
+    foldM_ (flip evalStmt) state stmts
+    appendNewLine "INT 10"
+    where lVarCount = Data.Map.size (lSymbolTable state)
+          (stmts, retnode) = case children of
+              [NodeReturn exp] -> ([], exp)
+              f -> (tail f, head f)
+          NodeConnector children = node
+          NodeReturn retexp = retnode
+
+fnCodeGen :: FDefinition -> State -> IO State
+fnCodeGen fdef state = do
+    -- print $ fSymbolTable fdef
+    appendNewLine $ "F" ++ show (funcLabel func) ++ ":"
+    appendNewLine "PUSH BP"
+    appendNewLine "MOV BP, SP"
+    appendNewLine $ "ADD SP, " ++ show lVarCount
+    newstate <- foldM (flip evalStmt) state1 stmts
+    (newstate1, reg) <- evalExp retexp newstate
+    appendNewLine "SUB BP, 2"
+    appendNewLine $ "MOV [BP], R" ++ show reg
+    appendNewLine $ "SUB SP, " ++ show lVarCount
+    appendNewLine "POP BP"
+    appendNewLine "BRKP"
+    appendNewLine "RET"
+    return newstate1
+    where lVarCount = Data.Map.size (fSymbolTable fdef) - length (funcParams func)
+          func = gSymbolTable state ! fName fdef
+          (stmts, retnode) = case children of
+              [NodeReturn exp] -> ([], exp)
+              f -> (tail f, head f)
+          NodeConnector children = fAST fdef
+          NodeReturn retexp = retnode
+          state1 = state { lSymbolTable = fSymbolTable fdef }
 
 appendNewLine :: String -> IO ()
 appendNewLine string = appendFile "file.txt" (string ++ "\n")
-
-getDeclarations :: Program -> [Decl]
-getDeclarations (ProgramStart(DeclStmt(Declarations declList):_)) = declList
-getDeclarations (ProgramStart (x:xs)) = getDeclarations $ ProgramStart xs
-
-sizeOf :: VarDecl -> [Int] -> [Int]
-sizeOf (VarDecl _) sizeArray = sizeArray ++ [1]
-sizeOf (PointerDecl name) sizeArray = sizeArray ++ [1]
-sizeOf (VarArray var size) sizeArray = sizeArray ++ [size] ++ sizeOf var []
-
-nameOf :: VarDecl -> String
-nameOf (VarDecl name) = name
-nameOf (PointerDecl name) = name
-nameOf (VarArray var _) = nameOf var
-
-isPointer :: VarDecl -> String
-isPointer (VarArray var _) = isPointer var
-isPointer (VarDecl _) = ""
-isPointer (PointerDecl _) = "PTR"
-
-doDeclarations :: [Decl] -> State -> State
-doDeclarations (Decl typ var : rest) state = doDeclarations rest newstate
-                                              where newstate = allocMem (nameOf var, sizeOf var []) (typ ++ isPointer var) state
-doDeclarations [] state = state
 
 main :: IO ()
 main = do
     let file = "input.txt"
     s <- readFile file
     let tokens = scanTokens s
-    let parsedTokens = parseCalc tokens
-    print parsedTokens
-    let declarations = getDeclarations parsedTokens
+    let (gSymTable, sp, fDef, (mainSymbols, mainAST)) = parseTokens tokens
     let registers = replicate 20 False
-    let labels = replicate 100 False
-    let variables = []
-    let state = State registers labels variables 0 0 False
-    let declaredState = doDeclarations declarations state
-    print declaredState
-    let ast = makeTreeProgram parsedTokens
-    putStrLn $ drawTree $ toDataTree ast
-    codeGen ast declaredState
+    let labels = 0
+    let state = State registers labels gSymTable mainSymbols 0 0 False ""
+    print gSymTable
+    -- print mainSymbols
+    mainCodeGen mainAST state sp
+    foldM_ (flip fnCodeGen) state fDef
     s <- readFile "file.txt"
     linkedCode <- replaceLabels s
     writeFile "linkedFile.txt" linkedCode

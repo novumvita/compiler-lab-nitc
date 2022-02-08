@@ -28,6 +28,8 @@ tokens :-
   "enddecl"                     { \s -> TokenEndDecl }
   "int"                         { \s -> TokenTypeInt }
   "str"                         { \s -> TokenTypeString }
+  "return"                      { \s -> TokenReturn }
+  "main"                        { \s -> TokenMain }
   \,                            { \s -> TokenComma }
   $digit+                       { \s -> TokenDig (read s) }
   \=                            { \s -> TokenEq }
@@ -39,6 +41,8 @@ tokens :-
   \)                            { \s -> TokenRParen }
   \[                            { \s -> TokenLSquare }
   \]                            { \s -> TokenRSquare }
+  \{                            { \s -> TokenLBrace }
+  \}                            { \s -> TokenRBrace }
   \;                            { \s -> TokenSemiColon}
   \<                            { \s -> TokenLT }
   \>                            { \s -> TokenGT }
@@ -65,6 +69,8 @@ data Token = TokenBegin
            | TokenRParen
            | TokenLSquare
            | TokenRSquare
+           | TokenLBrace
+           | TokenRBrace
            | TokenSemiColon
            | TokenLT
            | TokenGT
@@ -85,6 +91,8 @@ data Token = TokenBegin
            | TokenComma
            | TokenString String
            | TokenAnd
+           | TokenReturn
+           | TokenMain
            deriving (Eq,Show)
 
 scanTokens = alexScanTokens
