@@ -5,6 +5,7 @@ import SyntaxTree
 import Control.Monad.State
 import ParserState
 import SymbolTable
+import TypeTable
 import Data.Map
 }
 
@@ -36,6 +37,7 @@ import Data.Map
     ']'             { TokenRSquare }
     '{'             { TokenLBrace }
     '}'             { TokenRBrace }
+    '.'             { TokenPeriod }
     if              { TokenIf }
     then            { TokenThen }   
     else            { TokenElse }
@@ -53,6 +55,12 @@ import Data.Map
     string          { TokenString $$ }
     '&'             { TokenAnd }
     main            { TokenMain }
+    type            { TokenType }
+    endtype         { TokenEndType }
+    alloc           { TokenAlloc }
+    free            { TokenFree }
+    initialize      { TokenInit }
+    null            { TokenNull } 
 
 
 %nonassoc '>' '<' '!' 
@@ -62,12 +70,26 @@ import Data.Map
 
 %%
 
-Program : GDeclBlock FDefBlock MainBlock                                    { ($1, $2, $3) }
-        | GDeclBlock MainBlock                                              { ($1, [], $2) }
-        | MainBlock                                                         { (4096, [], $1) }
+Program : TypeDefBlock GDeclBlock FDefBlock MainBlock                        { ($1, $2, $3, $4) }
+        | TypeDefBlock GDeclBlock MainBlock                                  { ($1, $2, [], $3) }
+
+TypeDefBlock : type TypeDefList endtype                                      { % doTDecl $2 }
+             | type endtype                                                  { % doTDecl [] }
+             | {- no type declarations -}                                    { % doTDecl [] }
+
+TypeDefList : TypeDefList TypeDef                                            { $2 : $1 }
+            | TypeDef                                                        { [$1] }  
+
+TypeDef : ID '{' FieldDeclList '}'                                           { ($1, $3) }
+
+FieldDeclList : FieldDeclList FieldDecl                                      { $2 : $1 }
+              | FieldDecl                                                    { [$1] }
+
+FieldDecl : Type ID ';'                                                      { ($2, $1) }
 
 GDeclBlock : decl GDeclList enddecl                                         { % doGDecl $2 }
            | decl enddecl                                                   { 4096 }
+           | {- no global declarations -}                                   { 4096 }
 
 GDeclList : GDeclList GDecl                                                 { $2 : $1 }
           | GDecl                                                           { [$1] }
@@ -103,6 +125,7 @@ Param : Type ID                                                             { ($
 
 Type : int                                                                  { "int" }
      | str                                                                  { "str" }
+     | ID                                                                   { $1 }
 
 LDeclBlock : decl LDeclList enddecl                                         { % doLDecl $2 }
            | decl enddecl                                                   { % doLDecl [] }
@@ -122,6 +145,9 @@ SList : SList Stmt                                                          { le
       | Stmt                                                                { NodeConnector [$1] }
 
 Stmt : Variable '=' Exp ';'                                                 { NodeAssg $1 $3 }
+     | Variable '=' alloc '(' ')' ';'                                       { NodeAlloc $1 }
+     | Variable '=' initialize '(' ')' ';'                                  { NodeInit }
+     | Variable '=' free '(' Variable ')' ';'                               { NodeFree $5 }
      | read Variable ';'                                                    { NodeRead $2 }
      | read '(' Variable ')' ';'                                            { NodeRead $3 }
      | write Exp ';'                                                        { NodeWrite $2 }
@@ -132,9 +158,13 @@ Stmt : Variable '=' Exp ';'                                                 { No
      | continue ';'                                                         { NodeContinue }
      | RetStmt                                                              { $1 }
 
-Variable : Variable '[' Exp ']'                                             { let (NodeArray var indexes) = $1 in (NodeArray var ($3 : indexes)) }
+Variable : Field                                                            { $1  }
+         | Variable '[' Exp ']'                                             { let (NodeArray var indexes) = $1 in (NodeArray var ($3 : indexes)) }
          | var '[' Exp ']'                                                  { NodeArray $1 [$3] }
          | var                                                              { NodeVar $1 }
+
+Field : ID '.' ID                                                           { NodeField (NodePtr (NodeVar $1)) $3 }
+      | Field '.' ID                                                        { NodeField $1 $3 }
 
 Function : var '(' ArgList ')'                                              { % fnCallTypeCheck $1 $3 >>= \p -> return (NodeFnCall $1 p) }
 
@@ -158,6 +188,7 @@ Exp : Exp '+' Exp                                                           { No
     | '*' Variable                                                          { NodePtr $2 }
     | '&' Variable                                                          { NodeRef $2 }
     | Function                                                              { $1 }
+    | null                                                                  { NodeNull }
 
 MainBlock : int main '(' ')' '{' LDeclBlock FBody '}'                       { ($6, $7) }
 
@@ -166,9 +197,9 @@ MainBlock : int main '(' ')' '{' LDeclBlock FBody '}'                       { ($
 parseError :: [Token] -> a
 parseError tokens = error $ "Parse error" ++ show tokens
 
-parseTokens tokenStream = (gSymTable, sp, fDecl, main)
+parseTokens tokenStream = (typeTable, gSymTable, sp, fDecl, main)
   where
-    ((sp, fDecl, main), (gSymTable, _)) = runState (parse tokenStream) startState
+    ((typeTable, sp, fDecl, main), (gSymTable, _, _)) = runState (parse tokenStream) startState
 
-type Program = (Int, [FDefinition], (SymbolTable, Node))
+type Program = ([Type], Int, [FDefinition], (SymbolTable, Node))
 }

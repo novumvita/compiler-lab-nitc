@@ -11,6 +11,7 @@ data Node = NodeConnector [Node]
           | NodeReturn Node
           | NodeArray String [Node]
           | NodeVar String
+          | NodeField Node String
           | NodeOp String Node Node
           | NodeBool String Node Node
           | NodeInt Int 
@@ -18,4 +19,8 @@ data Node = NodeConnector [Node]
           | NodePtr Node
           | NodeRef Node
           | NodeFnCall String [Node]
+          | NodeAlloc Node
+          | NodeFree Node
+          | NodeInit
+          | NodeNull
           deriving Show

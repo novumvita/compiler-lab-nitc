@@ -30,7 +30,14 @@ tokens :-
   "str"                         { \s -> TokenTypeString }
   "return"                      { \s -> TokenReturn }
   "main"                        { \s -> TokenMain }
+  "type"                        { \s -> TokenType }
+  "endtype"                     { \s -> TokenEndType }
+  "alloc"                       { \s -> TokenAlloc }
+  "free"                        { \s -> TokenFree }
+  "initialize"                  { \s -> TokenInit }
+  "null"                        { \s -> TokenNull }
   \,                            { \s -> TokenComma }
+  \.                            { \s -> TokenPeriod }
   $digit+                       { \s -> TokenDig (read s) }
   \=                            { \s -> TokenEq }
   \+                            { \s -> TokenPlus }
@@ -93,6 +100,13 @@ data Token = TokenBegin
            | TokenAnd
            | TokenReturn
            | TokenMain
+           | TokenType
+           | TokenEndType
+           | TokenPeriod
+           | TokenAlloc
+           | TokenFree
+           | TokenInit
+           | TokenNull
            deriving (Eq,Show)
 
 scanTokens = alexScanTokens

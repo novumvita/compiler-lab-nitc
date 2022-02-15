@@ -1,6 +1,7 @@
 module SymbolTable where
 
 import Data.Map
+import TypeTable
 
 data SymbolFoundation = BaseVar String [Int]
                       | BaseFunc String [(String, String)]
@@ -18,7 +19,8 @@ data Symbol = Variable {
             | LVariable {
                 varType :: String,
                 varLocalBinding :: Int
-            } deriving Show
+            }
+            | Null deriving Show
 
 type SymbolTable = Map String Symbol
 
