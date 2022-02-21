@@ -19,8 +19,12 @@ data Node = NodeConnector [Node]
           | NodePtr Node
           | NodeRef Node
           | NodeFnCall String [Node]
+          | NodeClassFnCall Node [Node]
           | NodeAlloc Node
           | NodeFree Node
           | NodeInit
           | NodeNull
+          | NodeSelf
+          | NodeNew Node String
+          | NodeDelete Node
           deriving Show

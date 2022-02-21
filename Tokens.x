@@ -36,6 +36,12 @@ tokens :-
   "free"                        { \s -> TokenFree }
   "initialize"                  { \s -> TokenInit }
   "null"                        { \s -> TokenNull }
+  "class"                       { \s -> TokenClass }
+  "endclass"                    { \s -> TokenEndClass }
+  "extends"                     { \s -> TokenExtends }
+  "self"                        { \s -> TokenSelf }
+  "new"                         { \s -> TokenNew }
+  "delete"                      { \s -> TokenDelete }
   \,                            { \s -> TokenComma }
   \.                            { \s -> TokenPeriod }
   $digit+                       { \s -> TokenDig (read s) }
@@ -107,6 +113,12 @@ data Token = TokenBegin
            | TokenFree
            | TokenInit
            | TokenNull
+           | TokenClass
+           | TokenEndClass
+           | TokenExtends
+           | TokenSelf
+           | TokenNew
+           | TokenDelete
            deriving (Eq,Show)
 
 scanTokens = alexScanTokens

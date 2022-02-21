@@ -60,7 +60,13 @@ import Data.Map
     alloc           { TokenAlloc }
     free            { TokenFree }
     initialize      { TokenInit }
-    null            { TokenNull } 
+    null            { TokenNull }
+    class           { TokenClass }
+    endclass        { TokenEndClass } 
+    extends         { TokenExtends }
+    self            { TokenSelf }
+    new             { TokenNew }
+    delete          { TokenDelete }
 
 
 %nonassoc '>' '<' '!' 
@@ -70,12 +76,14 @@ import Data.Map
 
 %%
 
-Program : TypeDefBlock GDeclBlock FDefBlock MainBlock                        { ($1, $2, $3, $4) }
-        | TypeDefBlock GDeclBlock MainBlock                                  { ($1, $2, [], $3) }
+Program : TypeDefBlock ClassDefBlock GDeclBlock FDefBlock MainBlock          { ($1, $2, $3, $4, $5) }
+        | TypeDefBlock ClassDefBlock GDeclBlock MainBlock                    { ($1, $2, $3, [], $4) }
+
+        -- TYPEDEF
 
 TypeDefBlock : type TypeDefList endtype                                      { % doTDecl $2 }
              | type endtype                                                  { % doTDecl [] }
-             | {- no type declarations -}                                    { % doTDecl [] }
+             | {- no type definitions -}                                     { % doTDecl [] }
 
 TypeDefList : TypeDefList TypeDef                                            { $2 : $1 }
             | TypeDef                                                        { [$1] }  
@@ -87,9 +95,42 @@ FieldDeclList : FieldDeclList FieldDecl                                      { $
 
 FieldDecl : Type ID ';'                                                      { ($2, $1) }
 
+        -- CLASSDEF
+
+ClassDefBlock : class ClassDefList endclass                                  { (unions $ fst $ unzip $2, concat $ snd $ unzip $2) }
+              | class endclass                                               { (empty, []) }
+              | {- no class definitions -}                                   { (empty, []) } 
+
+ClassDefList : ClassDefList ClassDef                                         { $2 : $1 }
+             | ClassDef                                                      { [$1] }
+
+ClassDef : ClassDecl ClassBody                                               { ($1, $2) }
+
+ClassBody : CFDefBlock '}'                                                   { $1 }
+          | '}'                                                              { [] }
+
+ClassDecl : ClassName '{' decl CVDeclList CFDeclBlock enddecl                { % doCDecl $1 $4 $5 }
+
+CFDeclBlock : CFDeclList                                                     { % doGDecl $1 >> return $1 }
+
+ClassName : ID                                                               { ($1, "Null") }
+          | ID extends ID                                                    { ($1, $3) }
+
+CVDeclList : CVDeclList CVDecl                                               { $2 : $1 }
+           | CVDecl                                                          { [$1] }
+
+CVDecl : Type ID ';'                                                         { ($2, $1) }
+
+CFDeclList : CFDeclList CFDecl                                               { $2 : $1 }
+           | CFDecl                                                          { [$1] }
+
+CFDecl : Type ID '(' ParamList ')' ';'                                       { ($1, [BaseFunc $2 $4]) }
+
+        -- GDECL
+
 GDeclBlock : decl GDeclList enddecl                                         { % doGDecl $2 }
-           | decl enddecl                                                   { 4096 }
-           | {- no global declarations -}                                   { 4096 }
+           | decl enddecl                                                   { % doGDecl [] }
+           | {- no global declarations -}                                   { % doGDecl [] }
 
 GDeclList : GDeclList GDecl                                                 { $2 : $1 }
           | GDecl                                                           { [$1] }
@@ -105,10 +146,19 @@ GID : ID                                                                    { Ba
     | ID '(' ParamList ')'                                                  { BaseFunc $1 $3 }
 
 
+        -- FDEF
+
 FDefBlock : FDefBlock FDef                                                  { $2 : $1 }
           | FDef                                                            { [$1] }
 
+CFDefBlock : CFDefBlock CFDef                                               { $2 : $1 }
+           | CFDef                                                          { [$1] }
+
 FDef : Type ID '(' Params ')' '{' LDeclBlock FBody '}'                      { % fnDefTypeCheck $1 $2 $4 $7 $8 }
+
+CFDef : Type ID '(' CParams ')' '{' LDeclBlock FBody '}'                    { % fnDefTypeCheck $1 $2 $4 $7 $8 }
+
+CParams : ParamList                                                         { % doCPDecl $1 }
 
 Params : ParamList                                                          { % doPDecl $1 }
 
@@ -129,7 +179,7 @@ Type : int                                                                  { "i
 
 LDeclBlock : decl LDeclList enddecl                                         { % doLDecl $2 }
            | decl enddecl                                                   { % doLDecl [] }
-           | {-no local declarations-}                                      { % doLDecl [] }
+           | {- no local declarations -}                                    { % doLDecl [] }
 
 LDeclList : LDeclList LDecl                                                 { $2 : $1 }
           | LDecl                                                           { [$1] }
@@ -148,6 +198,8 @@ Stmt : Variable '=' Exp ';'                                                 { No
      | Variable '=' alloc '(' ')' ';'                                       { NodeAlloc $1 }
      | Variable '=' initialize '(' ')' ';'                                  { NodeInit }
      | Variable '=' free '(' Variable ')' ';'                               { NodeFree $5 }
+     | Variable '=' new '(' Type ')' ';'                                    { NodeNew $1 $5 }
+     | delete '(' Variable ')' ';'                                          { NodeDelete $3 }
      | read Variable ';'                                                    { NodeRead $2 }
      | read '(' Variable ')' ';'                                            { NodeRead $3 }
      | write Exp ';'                                                        { NodeWrite $2 }
@@ -164,12 +216,15 @@ Variable : Field                                                            { $1
          | var                                                              { NodeVar $1 }
 
 Field : ID '.' ID                                                           { NodeField (NodePtr (NodeVar $1)) $3 }
-      | Field '.' ID                                                        { NodeField $1 $3 }
+      | Field '.' ID                                                        { NodeField (NodePtr $1) $3 }
+      | self '.' ID                                                         { NodeField (NodePtr NodeSelf) $3 }
 
 Function : var '(' ArgList ')'                                              { % fnCallTypeCheck $1 $3 >>= \p -> return (NodeFnCall $1 p) }
+         | Field '(' ArgList ')'                                            { % classFnCallTypeCheck $1 $3 >>= \p -> return (NodeClassFnCall $1 p) }
 
 ArgList : ArgList ',' Exp                                                   { $3 : $1 }
         | Exp                                                               { [$1] }
+        | {- no args -}                                                     { [] }
 
 Exp : Exp '+' Exp                                                           { NodeOp "+" $1 $3 }
     | Exp '-' Exp                                                           { NodeOp "-" $1 $3 }
@@ -197,9 +252,9 @@ MainBlock : int main '(' ')' '{' LDeclBlock FBody '}'                       { ($
 parseError :: [Token] -> a
 parseError tokens = error $ "Parse error" ++ show tokens
 
-parseTokens tokenStream = (typeTable, gSymTable, sp, fDecl, main)
+parseTokens tokenStream = (typeTable, cTable, gSymTable, sp, fDecl, main)
   where
-    ((typeTable, sp, fDecl, main), (gSymTable, _, _)) = runState (parse tokenStream) startState
+    ((typeTable, cTable, sp, fDecl, main), (gSymTable, _, _, _, _)) = runState (parse tokenStream) startState
 
-type Program = ([Type], Int, [FDefinition], (SymbolTable, Node))
+type Program = (TypeTable, (ClassTable, [FDefinition]), Int, [FDefinition], (SymbolTable, Node))
 }

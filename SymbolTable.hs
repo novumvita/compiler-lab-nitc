@@ -1,10 +1,9 @@
 module SymbolTable where
 
 import Data.Map
-import TypeTable
 
 data SymbolFoundation = BaseVar String [Int]
-                      | BaseFunc String [(String, String)]
+                      | BaseFunc String [(String, String)] deriving Show
 
 data Symbol = Variable {
                 varType :: String,
@@ -54,6 +53,12 @@ genPSymbolTable :: [(String, String)] -> SymbolTable
 genPSymbolTable [] = empty
 genPSymbolTable params = fromListWith nameError (zipWith makeSymbolList params [startAddr ..])
     where startAddr = - 2 - length params
+          makeSymbolList = \(t, name) p -> (name, LVariable {varType=t, varLocalBinding=p})
+
+genCPSymbolTable :: [(String, String)] -> SymbolTable
+genCPSymbolTable [] = empty
+genCPSymbolTable params = fromListWith nameError (zipWith makeSymbolList params [startAddr ..])
+    where startAddr = - 3 - length params
           makeSymbolList = \(t, name) p -> (name, LVariable {varType=t, varLocalBinding=p})
 
 nameError = error "Variable declared multiple times."

@@ -9,10 +9,7 @@ import TypeTable
 import Link (replaceLabels)
 import Data.List
 import Data.Maybe
-import Data.Tree
-import Data.Tuple
 import Data.Map
-import ParserState
 import Control.Monad
 
 data Tree a b c = EmptyNode
@@ -20,9 +17,10 @@ data Tree a b c = EmptyNode
             deriving Show
 
 data State = State {
-    registers :: [Bool],
+    registers :: Int,
     labels :: Int,
     typeTable :: TypeTable,
+    classTable :: ClassTable,
     gSymbolTable :: SymbolTable,
     lSymbolTable :: SymbolTable,
     breakLabel :: Int,
@@ -60,28 +58,46 @@ getMem (NodeVar var) state = do
 
 getMem (NodeField var field) state = do
     (newstate, reg) <- getMem var state
-    aNL $ "ADD R" ++ show reg ++ ", " ++ show fieldindex
-    return (newstate, reg)
-    where fieldindex = fieldIndex (typeFields vartype ! field)
-          vartypename = getType var state
-          vartype = typeTable state ! vartypename
+    let vartype = Data.Map.lookup vartypename (typeTable state)
+    case vartype of
+        Just f -> do
+            aNL $ "ADD R" ++ show reg ++ ", " ++ show fieldindex
+            return (newstate, reg)
+            where fieldindex = fieldIndex $ fromMaybe (error $ show field) (typeFields f !? field)
+        Nothing -> do
+            aNL $ "ADD R" ++ show reg ++ ", " ++ show fieldindex
+            return (newstate, reg)
+            where fieldindex = fieldIndex $ fromMaybe (error $ show field) (classFields varclass !? field)
+                  varclass = fromMaybe (error $ show vartypename ) (classTable state !? vartypename)
+    where vartypename = getObjClass var state
 
 getMem (NodePtr child) state = evalExp child state
 
 getMem (NodeArray var indexes) state = do
-    let sym = varlist ! var
+    let sym = fromMaybe (error $ show var) (varlist !? var)
     let (newstate, reg) = getReg state
-    (indexRegs, newstate1) <- evalIndexes indexes [] newstate 
+    (indexRegs, newstate1) <- evalIndexes indexes [] newstate
     aNL $ "MOV R" ++ show reg ++ ", 0"
     newstate2 <- findOffset reg (varSize sym) indexRegs newstate1
     aNL $ "ADD R" ++ show reg ++ ", " ++ show (varBinding sym)
     return (newstate2, reg)
-    where (State a b t varlist z c d e f) = state
+    where varlist = gSymbolTable state
 
 getMem NodeNull state = do
     let (newstate, reg) = getReg state
     aNL $ "MOV R" ++ show reg ++ ", \"NULL\""
     return (newstate, reg)
+
+getMem NodeSelf state = do
+    let (newstate, reg) = getReg state
+    case sym of
+        LVariable _ lbinding -> do
+            aNL $ "MOV R" ++ show reg ++ ", BP"
+            aNL $ "ADD R" ++ show reg ++ ", " ++ show lbinding
+    return (newstate, reg)
+    where sym = lSymbolTable state ! "self"
+
+getMem f state = error $ show f
 
 getType :: Node -> State -> String
 getType (NodePtr var) state = getType var state
@@ -91,10 +107,10 @@ getType (NodeField var field) state = fieldtype
           tLookup = typeTable state ! vartype
           varfields = typeFields tLookup
           fieldtype = fieldType (varfields ! field)
-getType f state = error $ show f
+getType NodeSelf state = varType (lSymbolTable state ! "self")
 
 
-getSymbol :: String -> State -> Symbol 
+getSymbol :: String -> State -> Symbol
 getSymbol var state = fromMaybe gLookup $ Data.Map.lookup var  (lSymbolTable state)
           where gLookup = fromMaybe (error var) $ Data.Map.lookup var (gSymbolTable state)
 
@@ -105,30 +121,28 @@ switchOff :: [Bool] -> Int -> [Bool]
 switchOff list index = Data.List.take index list ++ False : Data.List.drop (index + 1) list
 
 getReg :: State -> (State, Int)
-getReg (State registers a t b z c d e f) = (State (switchOn registers reg) a t b z c d e f, reg)
-                   where reg = fromMaybe (error "register overflow.") (elemIndex False registers)
-
-lastUsedReg :: State -> Int
-lastUsedReg (State registers a t b z c d e f) = case elemIndex False registers of
-    Just f -> f - 1
-    Nothing -> 20
-
-freeReg :: State -> State
-freeReg (State registers a t b c z d e f) = State (reverse (switchOff revregisters reg)) a t b c z d e f
-                    where reg = fromMaybe (error "register underflow.") (elemIndex True revregisters)
-                          revregisters = reverse registers
+getReg state = (state {registers=register+1}, register)
+                where register = registers state
 
 getLabel :: State -> (State, Int)
-getLabel (State a label t b z c d e f) = (State a (label+1) t b z c d e f, label)
+getLabel state = (state {labels=label+1}, label)
+                where label = labels state
+
+lastUsedReg :: State -> Int
+lastUsedReg = registers
+
+freeReg :: State -> State
+freeReg state = state {registers=register-1}
+                where register = registers state
 
 startLoop :: State -> State
-startLoop (State a b t c z d e _ f) = State a b t c z d e True f
+startLoop state = state{inLoop=True}
 
 endLoop :: State -> State
-endLoop (State a b t c z d e _ f) = State a b t c z d e False f
+endLoop state = state{inLoop=False}
 
 setLabels :: State -> Int -> Int -> State
-setLabels (State a b t c z d e f g) label1 label2 = State a b t c z label1 label2 f g
+setLabels state label1 label2 = state{breakLabel=label1, continueLabel=label2}
 
 evalExp :: Node -> State -> IO (State, Int)
 
@@ -168,15 +182,30 @@ evalExp (NodeBool op leftNode rightNode) state = do
 
 evalExp (NodeFnCall name args) state = do
     pushRegs state
-    pushArgs (reverse args) state {registers = replicate 20 False}
+    pushArgs (reverse args) state {registers=0}
     aNL "PUSH R0"
-    aNL "BRKP"
     aNL $ "CALL F" ++ show (funcLabel (gSymbolTable state ! name))
     aNL $ "POP R" ++ show reg
     popArgs (length args)
     popRegs state
     return (newstate, reg)
     where (newstate,reg) = getReg state
+
+evalExp (NodeClassFnCall (NodeField var field) args) state = do
+    pushRegs state
+    pushArgs (reverse args) state {registers=0}
+    (newstate2, memreg) <- getMem var state
+    aNL $ "MOV R" ++ show reg ++ ", R" ++ show memreg
+    pushReg reg
+    aNL "PUSH R0"
+    aNL $ "CALL F" ++ funclass ++ show (funcLabel (classMethods (classTable state ! funclass) ! field))
+    aNL "BRKP"
+    aNL $ "POP R" ++ show reg
+    popArgs (length args + 1)
+    popRegs state
+    return (newstate, reg)
+    where (newstate,reg) = getReg state
+          funclass = getObjClass var state
 
 evalExp NodeNull state = do
     let (newstate, reg) = getReg state
@@ -189,6 +218,22 @@ evalExp var state = do
     aNL ("MOV R" ++  show reg ++ ", [R" ++ show memreg ++ "]")
     let newstate2 = freeReg newstate1
     return (newstate2, reg)
+
+getObjClass :: Node -> State -> String
+getObjClass (NodeVar name) state = varType (fromMaybe (fromJust (Data.Map.lookup name (gSymbolTable state))) (Data.Map.lookup name (lSymbolTable state)))
+getObjClass (NodePtr v) state = getObjClass v state
+getObjClass NodeSelf state = varType (lSymbolTable state ! "self")
+getObjClass (NodeField v fl) state = do
+    case tLookup of
+        Nothing -> fieldType fi
+        Just f -> fieldtype
+            where varfields = typeFields f
+                  fieldtype = fieldType (varfields ! fl)
+    where vartype = getType v state
+          tLookup = typeTable state !? vartype
+          cl = fromMaybe (error "cl") (classTable state !? getObjClass v state)
+          fi = fromMaybe (error "fi") (classFields cl !? fl)
+-- getObjClass f state = error $ show f
 
 pushArgs :: [Node] -> State -> IO State
 
@@ -205,8 +250,8 @@ popArgs :: Int -> IO ()
 popArgs n = case n of
     0 -> return ()
     x -> do
-         popReg 0
-         popArgs (x - 1) 
+         popReg 19
+         popArgs (x - 1)
 
 popReg :: Int -> IO()
 popReg reg = aNL $ "POP R" ++ show reg
@@ -215,11 +260,16 @@ pushReg :: Int -> IO()
 pushReg reg = aNL $ "PUSH R" ++ show reg
 
 popRegs :: State -> IO()
-popRegs state = mapM_ popReg (elemIndices True (registers state))
+popRegs state = case register of
+    0 -> return ()
+    reg -> mapM_ popReg [0 .. reg - 1]
+    where register = registers state
 
 pushRegs :: State -> IO()
-pushRegs state = mapM_ pushReg (reverse (elemIndices True (registers state)))
-
+pushRegs state = case register of
+    0 -> return ()
+    reg -> mapM_ pushReg [reg - 1, reg - 2 .. 0]
+    where register = registers state
 
 evalIndexes :: [Node] -> [Int] -> State -> IO ([Int], State)
 
@@ -235,7 +285,6 @@ findOffset reg (firstsize : sizes) (firstindex:indexRegs) state = do
     aNL $ "ADD R" ++ show reg ++ ", R" ++ show firstindex
     let newstate = freeReg state
     findOffset reg sizes indexRegs newstate
-    where (State registers b t varlist z c d e f) = state
 findOffset _ _ _ state = do return state
 
 
@@ -248,7 +297,6 @@ evalStmt (NodeAssg leftNode rightNode) state = do
     let newstate3 = freeReg rstate
     let newstate4 = freeReg newstate3
     return newstate4
-    where (State a b t varlist z c d e f) = state
 
 evalStmt (NodeIf leftNode middleNode (NodeConnector [])) state = do
     let (newstate, label) = getLabel state
@@ -328,7 +376,6 @@ evalStmt (NodeWrite node) state = do
     aNL $ "POP R" ++ show reg
     aNL $ "POP R" ++ show reg
     popRegs state
-    aNL "BRKP"
     return state
 
 evalStmt (NodeAlloc var) state = do
@@ -338,6 +385,29 @@ evalStmt (NodeAlloc var) state = do
     aNL $ "MOV R" ++ show reg ++ ", \"Alloc\""
     aNL $ "PUSH R" ++ show reg
     aNL $ "MOV R" ++ show reg ++ ", " ++ show size
+    aNL $ "PUSH R" ++ show reg
+    aNL $ "PUSH R" ++ show reg
+    aNL $ "PUSH R" ++ show reg
+    aNL $ "PUSH R" ++ show reg
+    aNL "CALL 0"
+    let (newstate1, newreg) = getReg newstate
+    aNL $ "POP R" ++ show reg
+    aNL $ "POP R" ++ show newreg
+    aNL $ "POP R" ++ show newreg
+    aNL $ "POP R" ++ show newreg
+    aNL $ "POP R" ++ show newreg
+    (leftstate, memreg) <- getMem var newstate1
+    aNL $ "MOV [R" ++ show memreg ++ "], R" ++ show reg
+    popRegs state
+    return state
+
+evalStmt (NodeNew var c) state = do
+    pushRegs state
+    let s = size (classFields (classTable state ! c))
+    let (newstate, reg) = getReg state
+    aNL $ "MOV R" ++ show reg ++ ", \"Alloc\""
+    aNL $ "PUSH R" ++ show reg
+    aNL $ "MOV R" ++ show reg ++ ", " ++ show s
     aNL $ "PUSH R" ++ show reg
     aNL $ "PUSH R" ++ show reg
     aNL $ "PUSH R" ++ show reg
@@ -372,7 +442,7 @@ evalStmt (NodeFree var) state = do
     aNL $ "POP R" ++ show reg
     aNL $ "POP R" ++ show reg
     popRegs state
-    return state    
+    return state
 
 evalStmt NodeInit state = do
     pushRegs state
@@ -392,19 +462,11 @@ evalStmt NodeInit state = do
     popRegs state
     return state
 
-evalStmt NodeBreak (State a b t c z breakLabel d True f) = do
-    aNL $ "JMP L" ++ show breakLabel
-    return (State a b t c z breakLabel d True f)
+evalStmt NodeBreak state = do
+    if inLoop state then aNL ("JMP L" ++ show (breakLabel state)) >> return state else return state
 
-evalStmt NodeBreak (State a b t c z d e False f) = do
-    return (State a b t c z d e False f)
-
-evalStmt NodeContinue  (State a b t c z d continueLabel True f) = do
-    aNL $ "JMP L" ++ show continueLabel
-    return (State a b t c z continueLabel d True f)
-
-evalStmt NodeContinue (State a b t c z d e False f) = do
-    return (State a b t c z d e False f)
+evalStmt NodeContinue state = do
+    if inLoop state then aNL ("JMP L" ++ show (continueLabel state)) >> return state else return state
 
 evalStmt (NodeConnector []) state = return state
 
@@ -413,7 +475,6 @@ evalStmt (NodeConnector stmts) state = foldM (flip evalStmt) state stmts
 mainCodeGen :: Node -> State -> Int -> IO State
 mainCodeGen node state sp = do
     writeFile "file.txt" "0\n2056\n0\n0\n0\n0\n0\n0\n"
-    aNL "BRKP"
     aNL $ "MOV SP, " ++ show sp
     aNL "MOV BP, SP"
     aNL $ "ADD SP, " ++ show lVarCount
@@ -429,10 +490,10 @@ mainCodeGen node state sp = do
 
 fnCodeGen :: FDefinition -> State -> IO State
 fnCodeGen fdef state = do
-    print "FSYMTABLE: "
-    print $ fSymbolTable fdef
-    print "FAST: "
-    print $ fAST fdef
+    -- print "FSYMTABLE: "
+    -- print $ fSymbolTable fdef
+    -- print "FAST: "
+    -- print $ fAST fdef
     aNL $ "F" ++ show (funcLabel func) ++ ":"
     aNL "PUSH BP"
     aNL "MOV BP, SP"
@@ -444,14 +505,42 @@ fnCodeGen fdef state = do
     aNL $ "SUB SP, " ++ show lVarCount
     aNL "POP BP"
     aNL "RET"
-    return newstate1
+    return newstate1{registers=0}
     where lVarCount = Data.Map.size (fSymbolTable fdef) - length (funcParams func)
           func = gSymbolTable state ! fName fdef
           (stmts, retnode) = case children of
-              [NodeReturn exp] -> ([], exp)
+              [f] -> ([], f)
               f -> (tail f, head f)
-          NodeConnector children = fAST fdef
           NodeReturn retexp = retnode
+          NodeConnector children = fAST fdef
+          state1 = state { lSymbolTable = fSymbolTable fdef }
+
+cFnCodeGen :: FDefinition -> State -> IO State
+cFnCodeGen fdef state = do
+    -- print "FSYMTABLE: "
+    -- print $ fSymbolTable fdef
+    -- print "FAST: "
+    -- print $ fAST fdef
+    aNL $ "F" ++ fClass fdef ++ show (funcLabel func) ++ ":"
+    aNL "PUSH BP"
+    aNL "MOV BP, SP"
+    aNL $ "ADD SP, " ++ show lVarCount
+    newstate <- foldM (flip evalStmt) state1 stmts
+    (newstate1, reg) <- evalExp retexp newstate
+    aNL "SUB BP, 2"
+    aNL $ "MOV [BP], R" ++ show reg
+    aNL $ "SUB SP, " ++ show lVarCount
+    aNL "POP BP"
+    aNL "RET"
+    -- print $ fName fdef ++ " done"
+    return newstate1{registers=0}
+    where lVarCount = Data.Map.size (fSymbolTable fdef) - (length (funcParams func) + 1)
+          func = classMethods (classTable state ! fClass fdef) ! fName fdef
+          (stmts, retnode) = case children of
+              [f] -> ([], f)
+              f -> (tail f, head f)
+          NodeReturn retexp = retnode
+          NodeConnector children = fAST fdef
           state1 = state { lSymbolTable = fSymbolTable fdef }
 
 aNL :: String -> IO ()
@@ -462,16 +551,18 @@ main = do
     let file = "input.txt"
     s <- readFile file
     let tokens = scanTokens s
-    let (typeTable, gSymTable, sp, fDef, (mainSymbols, mainAST)) = parseTokens tokens
-    let registers = replicate 20 False
-    let labels = 0
-    let state = State registers labels typeTable gSymTable mainSymbols 0 0 False ""
-    print $ "GSYMTABLE: " ++ show gSymTable
-    print $ "TTABLE: " ++ show typeTable
-    print $ "MAINSYMTABLE: " ++ show mainSymbols
-    print $ "MAINAST: " ++ show mainAST
+    let (typeTable, (cTable, cFDefs), gSymTable, sp, fDef, (mainSymbols, mainAST)) = parseTokens tokens
+    let state = State 0 0 typeTable cTable gSymTable mainSymbols 0 0 False ""
+    -- print $ "CFDEF: " ++ show cFDefs
+    -- print $ "FDEF: " ++ show fDef
+    -- print $ "CTABLE: " ++ show cTable
+    -- print $ "GSYMTABLE: " ++ show gSymTable
+    -- print $ "TTABLE: " ++ show typeTable
+    -- print $ "MAINSYMTABLE: " ++ show mainSymbols
+    -- print $ "MAINAST: " ++ show mainAST
     newstate <- mainCodeGen mainAST state sp
-    foldM_ (flip fnCodeGen) newstate fDef
+    newerstate <- foldM (flip fnCodeGen) newstate{registers=0} fDef
+    foldM_ (flip cFnCodeGen) newerstate{registers=0} cFDefs
     s <- readFile "file.txt"
     linkedCode <- replaceLabels s
     writeFile "linkedFile.txt" linkedCode
