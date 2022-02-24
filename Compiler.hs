@@ -26,7 +26,9 @@ data State = State {
     breakLabel :: Int,
     continueLabel :: Int,
     inLoop :: Bool,
-    code :: String
+    vft :: Map String Int,
+    funOffsets :: Map String Int,
+    sp :: Int
 } deriving Show
 
 translateOp :: String -> String
@@ -52,12 +54,13 @@ getMem (NodeVar var) state = do
             aNL $ "MOV R" ++ show reg ++ ", BP"
             aNL $ "ADD R" ++ show reg ++ ", " ++ show lbinding
         Variable _ _ gbinding -> do
-            aNL $ "MOV R" ++ show reg ++ ", " ++ show gbinding
+            aNL $ "MOV R" ++ show reg ++ ", " ++ show (sp state)
+            aNL $ "ADD R" ++ show reg ++ ", " ++ show gbinding
     return (newstate, reg)
     where sym = getSymbol var state
 
 getMem (NodeField var field) state = do
-    (newstate, reg) <- getMem var state
+    (newstate, reg) <- getMem (NodePtr var) state
     let vartype = Data.Map.lookup vartypename (typeTable state)
     case vartype of
         Just f -> do
@@ -102,11 +105,16 @@ getMem f state = error $ show f
 getType :: Node -> State -> String
 getType (NodePtr var) state = getType var state
 getType (NodeVar var) state = varType (getSymbol var state)
-getType (NodeField var field) state = fieldtype
+getType (NodeField var field) state = case tLookup of
+    Just f -> fieldtype
+          where varfields = typeFields f
+                fieldtype = fieldType (varfields ! field)
+    Nothing -> fieldtype
+          where cLookup = classTable state ! vartype
+                varfields = classFields cLookup
+                fieldtype = fieldType (varfields ! field)
     where vartype = getType var state
-          tLookup = typeTable state ! vartype
-          varfields = typeFields tLookup
-          fieldtype = fieldType (varfields ! field)
+          tLookup = typeTable state !? vartype
 getType NodeSelf state = varType (lSymbolTable state ! "self")
 
 
@@ -194,18 +202,29 @@ evalExp (NodeFnCall name args) state = do
 evalExp (NodeClassFnCall (NodeField var field) args) state = do
     pushRegs state
     pushArgs (reverse args) state {registers=0}
-    (newstate2, memreg) <- getMem var state
+    (newstate2, memreg) <- getMem (NodePtr var) newstate
+    (newstate3, sreg) <- getMem var newstate2
     aNL $ "MOV R" ++ show reg ++ ", R" ++ show memreg
     pushReg reg
+    aNL $ "ADD R" ++ show sreg ++ ", 1"
+    aNL "BRKP"
+    aNL $ "MOV R" ++ show reg ++ ", R" ++ show sreg
+    aNL $ "MOV R" ++ show sreg ++ ", [R" ++ show reg ++ "]"
+    pushReg sreg
+    aNL $ "ADD R" ++ show sreg ++ ", " ++ show funOffset
+    aNL $ "MOV R" ++ show reg ++ ", [R" ++ show sreg ++ "]"
     aNL "PUSH R0"
-    aNL $ "CALL F" ++ funclass ++ show (funcLabel (classMethods (classTable state ! funclass) ! field))
+    aNL "BRKP"
+    aNL $ "CALL R" ++ show reg
     aNL "BRKP"
     aNL $ "POP R" ++ show reg
-    popArgs (length args + 1)
+    popArgs (length args + 2)
     popRegs state
     return (newstate, reg)
     where (newstate,reg) = getReg state
           funclass = getObjClass var state
+          cl = classTable state ! funclass
+          funOffset = fromJust $ elemIndex field (classFunOffsets cl)
 
 evalExp NodeNull state = do
     let (newstate, reg) = getReg state
@@ -291,9 +310,19 @@ findOffset _ _ _ state = do return state
 evalStmt :: Node -> State -> IO State
 
 evalStmt (NodeAssg leftNode rightNode) state = do
+    let typ = getType leftNode state
+    let tlook = typeTable state !? typ
     (newstate, memreg) <- getMem leftNode state
     (rstate, rightVal) <- evalExp rightNode newstate
-    aNL $ "MOV [R" ++ show memreg ++ "], R" ++ show rightVal
+    case tlook of
+        Just f -> do
+            aNL $ "MOV [R" ++ show memreg ++ "], R" ++ show rightVal
+        Nothing -> do
+            (rstate, rightreg) <- getMem rightNode newstate
+            aNL $ "MOV [R" ++ show memreg ++ "], [R" ++ show rightreg ++ "]"
+            aNL $ "ADD R" ++ show memreg ++ ", 1"
+            aNL $ "ADD R" ++ show rightreg ++ ", 1"
+            aNL $ "MOV [R" ++ show memreg ++ "], [R" ++ show rightreg ++ "]"
     let newstate3 = freeReg rstate
     let newstate4 = freeReg newstate3
     return newstate4
@@ -336,6 +365,8 @@ evalStmt (NodeWhile leftNode rightNode) state = do
     let newstate2 = setLabels newstate1 oldBLabel oldCLabel
     return newstate2
 
+evalStmt (NodeRead (NodeField v f)) state = evalStmt (NodeRead (NodePtr (NodeField v f))) state
+
 evalStmt (NodeRead var) state = do
     pushRegs state
     (newstate, memreg) <- getMem var state
@@ -357,6 +388,8 @@ evalStmt (NodeRead var) state = do
     popRegs state
     return state
 
+-- evalStmt (NodeWrite (NodeField v f)) state = evalStmt (NodeWrite (NodePtr (NodeField v f))) state
+
 evalStmt (NodeWrite node) state = do
     pushRegs state
     (newstate, val) <- evalExp node state
@@ -375,6 +408,7 @@ evalStmt (NodeWrite node) state = do
     aNL $ "POP R" ++ show reg
     aNL $ "POP R" ++ show reg
     aNL $ "POP R" ++ show reg
+    aNL "BRKP"
     popRegs state
     return state
 
@@ -403,7 +437,7 @@ evalStmt (NodeAlloc var) state = do
 
 evalStmt (NodeNew var c) state = do
     pushRegs state
-    let s = size (classFields (classTable state ! c))
+    let s = size (classFields cl)
     let (newstate, reg) = getReg state
     aNL $ "MOV R" ++ show reg ++ ", \"Alloc\""
     aNL $ "PUSH R" ++ show reg
@@ -420,9 +454,15 @@ evalStmt (NodeNew var c) state = do
     aNL $ "POP R" ++ show newreg
     aNL $ "POP R" ++ show newreg
     (leftstate, memreg) <- getMem var newstate1
+    aNL "BRKP"
     aNL $ "MOV [R" ++ show memreg ++ "], R" ++ show reg
+    aNL $ "ADD R" ++ show memreg ++ ", 1"
+    aNL $ "MOV [R" ++ show memreg ++ "], " ++ show vftaddr
+    print vftaddr
     popRegs state
     return state
+    where cl = classTable state ! c
+          vftaddr = vft state ! c
 
 evalStmt (NodeFree var) state = do
     pushRegs state
@@ -474,7 +514,6 @@ evalStmt (NodeConnector stmts) state = foldM (flip evalStmt) state stmts
 
 mainCodeGen :: Node -> State -> Int -> IO State
 mainCodeGen node state sp = do
-    writeFile "file.txt" "0\n2056\n0\n0\n0\n0\n0\n0\n"
     aNL $ "MOV SP, " ++ show sp
     aNL "MOV BP, SP"
     aNL $ "ADD SP, " ++ show lVarCount
@@ -494,7 +533,7 @@ fnCodeGen fdef state = do
     -- print $ fSymbolTable fdef
     -- print "FAST: "
     -- print $ fAST fdef
-    aNL $ "F" ++ show (funcLabel func) ++ ":"
+    -- aNL $ "F" ++ show (funcLabel func) ++ ":"
     aNL "PUSH BP"
     aNL "MOV BP, SP"
     aNL $ "ADD SP, " ++ show lVarCount
@@ -517,11 +556,14 @@ fnCodeGen fdef state = do
 
 cFnCodeGen :: FDefinition -> State -> IO State
 cFnCodeGen fdef state = do
-    -- print "FSYMTABLE: "
+    -- print "CFNAME: "
+    -- print $ fName fdef
+    -- print "CFSYMTABLE: "
     -- print $ fSymbolTable fdef
-    -- print "FAST: "
+    -- print "CFAST: "
     -- print $ fAST fdef
-    aNL $ "F" ++ fClass fdef ++ show (funcLabel func) ++ ":"
+    aNL $ "F" ++ show (funcLabel func) ++ ":"
+    aNL "BRKP"
     aNL "PUSH BP"
     aNL "MOV BP, SP"
     aNL $ "ADD SP, " ++ show lVarCount
@@ -534,7 +576,7 @@ cFnCodeGen fdef state = do
     aNL "RET"
     -- print $ fName fdef ++ " done"
     return newstate1{registers=0}
-    where lVarCount = Data.Map.size (fSymbolTable fdef) - (length (funcParams func) + 1)
+    where lVarCount = Data.Map.size (fSymbolTable fdef) - (length (funcParams func) + 2)
           func = classMethods (classTable state ! fClass fdef) ! fName fdef
           (stmts, retnode) = case children of
               [f] -> ([], f)
@@ -542,6 +584,32 @@ cFnCodeGen fdef state = do
           NodeReturn retexp = retnode
           NodeConnector children = fAST fdef
           state1 = state { lSymbolTable = fSymbolTable fdef }
+
+vFTCodeGen :: ClassTable -> String -> IO ()
+vFTCodeGen ctable cname = do
+    let currClass = ctable ! cname
+    let parClass = ctable !? classParent currClass
+    let (parFun, childFun) = case parClass of
+            Just f -> (intersection (classMethods currClass) (classMethods f), difference (classMethods currClass) (classMethods f))
+            Nothing  -> (empty, classMethods  currClass)
+    let parSym = Prelude.map funcLabel (elems parFun)
+    let childSym = Prelude.map funcLabel (elems childFun)
+    mapM_ vFTBuild parSym
+    mapM_ vFTBuild childSym
+    let rest = 8 - (length parSym + length childSym)
+    aNL $ "ADD SP, " ++ show rest
+
+vFTBuild :: Int -> IO ()
+vFTBuild label = do
+    aNL $ "MOV R0, F" ++ show label
+    aNL "PUSH R0"
+
+vFTMapBuild :: Map String Int -> [String] -> Int -> ClassTable -> Map String Int
+vFTMapBuild m [] _ _ = m
+vFTMapBuild m (x : xs) sp ctable = Data.Map.union newm map2
+    where newm = singleton x sp
+          f = sp + 8
+          map2 = vFTMapBuild m xs f ctable
 
 aNL :: String -> IO ()
 aNL string = appendFile "file.txt" (string ++ "\n")
@@ -551,8 +619,11 @@ main = do
     let file = "input.txt"
     s <- readFile file
     let tokens = scanTokens s
-    let (typeTable, (cTable, cFDefs), gSymTable, sp, fDef, (mainSymbols, mainAST)) = parseTokens tokens
-    let state = State 0 0 typeTable cTable gSymTable mainSymbols 0 0 False ""
+    let (typeTable, (cTable, cFDefs), gSymTable, gVarSize, fDef, (mainSymbols, mainAST)) = parseTokens tokens
+    let vft = vFTMapBuild empty (keys cTable) 4096 cTable
+    let newSP = 4096 + (size cTable * 8) - gVarSize
+    let state = State 0 0 typeTable cTable gSymTable mainSymbols 0 0 False vft empty newSP
+    -- print $ "VFT: " ++ show vft
     -- print $ "CFDEF: " ++ show cFDefs
     -- print $ "FDEF: " ++ show fDef
     -- print $ "CTABLE: " ++ show cTable
@@ -560,7 +631,9 @@ main = do
     -- print $ "TTABLE: " ++ show typeTable
     -- print $ "MAINSYMTABLE: " ++ show mainSymbols
     -- print $ "MAINAST: " ++ show mainAST
-    newstate <- mainCodeGen mainAST state sp
+    writeFile "file.txt" "0\n2056\n0\n0\n0\n0\n0\n0\n"
+    mapM_ (vFTCodeGen cTable) (keys cTable)
+    newstate <- mainCodeGen mainAST state newSP
     newerstate <- foldM (flip fnCodeGen) newstate{registers=0} fDef
     foldM_ (flip cFnCodeGen) newerstate{registers=0} cFDefs
     s <- readFile "file.txt"

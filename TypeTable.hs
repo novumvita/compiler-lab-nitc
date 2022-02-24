@@ -19,7 +19,8 @@ data Field = Field {
 data Class = Class {
     classParent :: String,
     classFields :: FieldTable,
-    classMethods :: SymbolTable
+    classMethods :: SymbolTable,
+    classFunOffsets :: [String]
 } deriving Show
 
 type FieldTable = Map String Field
@@ -36,8 +37,8 @@ data FDefinition = FDefinition {
     fClass :: String
 } deriving Show
 
-genTTable :: [(String, [(String, String)])] -> TypeTable 
-genTTable [] = empty 
+genTTable :: [(String, [(String, String)])] -> TypeTable
+genTTable [] = empty
 genTTable (x : xs) = unionWith (error "Type declared multiple times.") map1 map2
     where map1 = genTTable xs
           map2 = typeBuild x
@@ -49,14 +50,10 @@ typeBuild (tname, fields) = Data.Map.singleton tname Type {typeSize=length field
 fieldsBuild :: (String, String) -> Int -> (String, Field)
 fieldsBuild (fname, ftype) findex = (fname, Field {fieldIndex=findex, fieldType=ftype})
 
-genCTable :: [((String, String), [(String, String)], [(String, [SymbolFoundation])])] -> ClassTable
-genCTable [] = empty 
-genCTable (x : xs) = unionWith (error "Class declared multiple times.") map1 map2
-    where map1 = genCTable xs 
-          map2 = classBuild x
-
-classBuild :: ((String, String), [(String, String)],  [(String, [SymbolFoundation])]) -> ClassTable
-classBuild ((cname, parent), vdecls, fdecls) = Data.Map.singleton cname Class { classParent=parent, classFields=fieldlist, classMethods=functionlist}
-    where fieldlist = fromListWith (error "Field declared multiple times.") (zipWith fieldsBuild vdecls [0..])
-          functionlist = fromList (zipWith3 (\name pos sym-> (name, sym))(keys flist) [0..] (elems flist))
-          (flist, _, _) = genGSymbolTable fdecls
+classBuild :: ((String, String), [(String, String)],  [(String, [SymbolFoundation])]) ->  Maybe Class -> [String] -> Int -> ((String, Class), Int)
+classBuild ((cname, parent), vdecls, fdecls) parClass tTable lab = ((cname, Class { classParent=parent, classFields=fieldlist `union` parentfieldlist, classMethods=flist `union` parentfunctionlist, classFunOffsets=[]}), newlab)
+    where fieldlist = fromListWith (error "Field declared multiple times.") (zipWith fieldsBuild vdecls [startIndex ..])
+          (flist, _, newlab) = genGSymbolTable fdecls tTable lab
+          parentfieldlist = maybe empty classFields parClass
+          parentfunctionlist = maybe empty classMethods parClass
+          startIndex = length parentfunctionlist

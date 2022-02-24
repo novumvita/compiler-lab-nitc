@@ -1,6 +1,7 @@
 module SymbolTable where
 
 import Data.Map
+import qualified Data.List as List
 
 data SymbolFoundation = BaseVar String [Int]
                       | BaseFunc String [(String, String)] deriving Show
@@ -23,23 +24,29 @@ data Symbol = Variable {
 
 type SymbolTable = Map String Symbol
 
-gSymbolsBuild :: (String, [SymbolFoundation]) -> Int -> Int -> ([(String, Symbol)], Int, Int)
-gSymbolsBuild (_, []) addr fLabel = ([], addr, fLabel)
-gSymbolsBuild (t, BaseVar name size : xs) addr fLabel = ((name, Variable {varType=t, varSize=size, varBinding=addr}) : symbols, a, b)
-    where (symbols, a, b) = gSymbolsBuild (t, xs) (addr + product size) fLabel
-gSymbolsBuild (t, BaseFunc name params : xs) addr fLabel = ((name, Function {funcType=t, funcParams=params, funcLabel=fLabel}) : symbols, a, b)
-    where (symbols, a, b) = gSymbolsBuild (t, xs) addr (fLabel+1)
+gSymbolsBuild :: (String, [SymbolFoundation]) -> Int -> Int -> [String] -> ([(String, Symbol)], Int, Int)
+gSymbolsBuild (_, []) addr fLabel tTable = ([], addr, fLabel)
+gSymbolsBuild (t, BaseVar name size : xs) addr fLabel tTable = case t of
+    "int" ->  ((name, Variable {varType=t, varSize=size, varBinding=addr}) : symbols, a, b)
+    "str" ->  ((name, Variable {varType=t, varSize=size, varBinding=addr}) : symbols, a, b)
+    t -> if isType then ((name, Variable {varType=t, varSize=size , varBinding=addr-product size}) : symbols, a, b)
+    else ((name, Variable {varType=t, varSize=2:tail size, varBinding=addr-2}) : symbols2, a2, b2)
+        where isType = t `elem` tTable
+    where (symbols, a, b) = gSymbolsBuild (t, xs) (addr - product size) fLabel tTable
+          (symbols2, a2, b2) = gSymbolsBuild (t, xs) (addr - 2) fLabel tTable
+gSymbolsBuild (t, BaseFunc name params : xs) addr fLabel tTable = ((name, Function {funcType=t, funcParams=params, funcLabel=fLabel}) : symbols, a, b)
+    where (symbols, a, b) = gSymbolsBuild (t, xs) addr (fLabel+1) tTable
 
 lSymbolsBuild :: (String, [String]) -> [Int] -> [(String, Symbol)]
 lSymbolsBuild (_, []) = const []
 lSymbolsBuild (t, x : xs) = \p -> (x, LVariable {varType=t, varLocalBinding=head p}) : symbols (tail p)
     where symbols = lSymbolsBuild (t, xs)
 
-genGSymbolTable :: [(String, [SymbolFoundation])] -> (SymbolTable, Int, Int)
-genGSymbolTable [] = (empty, 4096, 0)
-genGSymbolTable (x : xs) = (unionWith nameError map1 map2, addr2, label2)
-    where (map1, addr, label) = genGSymbolTable xs
-          (symbols, addr2, label2) = gSymbolsBuild x addr label
+genGSymbolTable :: [(String, [SymbolFoundation])] -> [String] -> Int -> (SymbolTable, Int, Int)
+genGSymbolTable [] _ lab = (empty, -1, lab)
+genGSymbolTable (x : xs) tTable lab = (unionWith nameError map1 map2, addr2, label2)
+    where (map1, addr, label) = genGSymbolTable xs tTable lab
+          (symbols, addr2, label2) = gSymbolsBuild x addr label tTable
           map2 = fromListWith nameError symbols
 
 genLSymbolTable :: [(String, [String])] -> SymbolTable
@@ -58,7 +65,7 @@ genPSymbolTable params = fromListWith nameError (zipWith makeSymbolList params [
 genCPSymbolTable :: [(String, String)] -> SymbolTable
 genCPSymbolTable [] = empty
 genCPSymbolTable params = fromListWith nameError (zipWith makeSymbolList params [startAddr ..])
-    where startAddr = - 3 - length params
+    where startAddr = - 4 - length params
           makeSymbolList = \(t, name) p -> (name, LVariable {varType=t, varLocalBinding=p})
 
 nameError = error "Variable declared multiple times."

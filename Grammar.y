@@ -110,6 +110,8 @@ ClassBody : CFDefBlock '}'                                                   { $
           | '}'                                                              { [] }
 
 ClassDecl : ClassName '{' decl CVDeclList CFDeclBlock enddecl                { % doCDecl $1 $4 $5 }
+          | ClassName '{' decl CFDeclBlock enddecl                           { % doCDecl $1 [] $4 }
+          | ClassName '{' decl CVDeclList enddecl                            { % doCDecl $1 $4 [] }
 
 CFDeclBlock : CFDeclList                                                     { % doGDecl $1 >> return $1 }
 
@@ -194,18 +196,18 @@ ID : var                                                                    { $1
 SList : SList Stmt                                                          { let (NodeConnector s) = $1 in NodeConnector (s ++ [$2]) }
       | Stmt                                                                { NodeConnector [$1] }
 
-Stmt : Variable '=' Exp ';'                                                 { NodeAssg $1 $3 }
+Stmt : Variable '=' Exp ';'                                                 { % assgTypeCheck $1 $3 }
      | Variable '=' alloc '(' ')' ';'                                       { NodeAlloc $1 }
      | Variable '=' initialize '(' ')' ';'                                  { NodeInit }
      | Variable '=' free '(' Variable ')' ';'                               { NodeFree $5 }
-     | Variable '=' new '(' Type ')' ';'                                    { NodeNew $1 $5 }
+     | Variable '=' new '(' Type ')' ';'                                    { % newTypeCheck $1 $5 }
      | delete '(' Variable ')' ';'                                          { NodeDelete $3 }
      | read Variable ';'                                                    { NodeRead $2 }
      | read '(' Variable ')' ';'                                            { NodeRead $3 }
      | write Exp ';'                                                        { NodeWrite $2 }
-     | if Exp then SList else SList endif ';'                               { NodeIf $2 $4 $6 }
-     | if Exp then SList endif ';'                                          { NodeIf $2 $4 (NodeConnector []) }
-     | while Exp do SList endwhile ';'                                      { NodeWhile $2 $4 }
+     | if Exp then SList else SList endif ';'                               { % nodeToType $2 >>= \p -> if p == "bool" then return (NodeIf $2 $4 $6) else typeError "at if." }
+     | if Exp then SList endif ';'                                          { % nodeToType $2 >>= \p -> if p == "bool" then return (NodeIf $2 $4 (NodeConnector [])) else typeError "at if." }
+     | while Exp do SList endwhile ';'                                      { % nodeToType $2 >>= \p -> if p == "bool" then return (NodeWhile $2 $4) else typeError "at if." }
      | break ';'                                                            { NodeBreak }
      | continue ';'                                                         { NodeContinue }
      | RetStmt                                                              { $1 }
@@ -215,9 +217,9 @@ Variable : Field                                                            { $1
          | var '[' Exp ']'                                                  { NodeArray $1 [$3] }
          | var                                                              { NodeVar $1 }
 
-Field : ID '.' ID                                                           { NodeField (NodePtr (NodeVar $1)) $3 }
-      | Field '.' ID                                                        { NodeField (NodePtr $1) $3 }
-      | self '.' ID                                                         { NodeField (NodePtr NodeSelf) $3 }
+Field : ID '.' ID                                                           { NodeField (NodeVar $1) $3 }
+      | Field '.' ID                                                        { NodeField $1 $3 }
+      | self '.' ID                                                         { NodeField NodeSelf $3 }
 
 Function : var '(' ArgList ')'                                              { % fnCallTypeCheck $1 $3 >>= \p -> return (NodeFnCall $1 p) }
          | Field '(' ArgList ')'                                            { % classFnCallTypeCheck $1 $3 >>= \p -> return (NodeClassFnCall $1 p) }
@@ -226,16 +228,16 @@ ArgList : ArgList ',' Exp                                                   { $3
         | Exp                                                               { [$1] }
         | {- no args -}                                                     { [] }
 
-Exp : Exp '+' Exp                                                           { NodeOp "+" $1 $3 }
-    | Exp '-' Exp                                                           { NodeOp "-" $1 $3 }
-    | Exp '*' Exp                                                           { NodeOp "*" $1 $3 }
-    | Exp '/' Exp                                                           { NodeOp "/" $1 $3 }
-    | Exp '<' Exp                                                           { NodeBool "<" $1 $3 }
-    | Exp '>' Exp                                                           { NodeBool ">" $1 $3 }
-    | Exp '<' '=' Exp                                                       { NodeBool "<=" $1 $4 }
-    | Exp '>' '=' Exp                                                       { NodeBool ">=" $1 $4 }
-    | Exp '!' '=' Exp                                                       { NodeBool "!=" $1 $4 }
-    | Exp '=' '=' Exp                                                       { NodeBool "==" $1 $4 }
+Exp : Exp '+' Exp                                                           { % opTypeCheck "+" $1 $3 }
+    | Exp '-' Exp                                                           { % opTypeCheck "-" $1 $3 }
+    | Exp '*' Exp                                                           { % opTypeCheck "*" $1 $3 }
+    | Exp '/' Exp                                                           { % opTypeCheck "/" $1 $3 }
+    | Exp '<' Exp                                                           { % boolTypeCheck "<" $1 $3 }
+    | Exp '>' Exp                                                           { % boolTypeCheck ">" $1 $3 }
+    | Exp '<' '=' Exp                                                       { % boolTypeCheck "<=" $1 $4 }
+    | Exp '>' '=' Exp                                                       { % boolTypeCheck ">=" $1 $4 }
+    | Exp '!' '=' Exp                                                       { % boolTypeCheck "!=" $1 $4 }
+    | Exp '=' '=' Exp                                                       { % boolTypeCheck "==" $1 $4 }
     | '(' Exp ')'                                                           { $2 }
     | num                                                                   { NodeInt $1 }
     | string                                                                { NodeStr $1 }
@@ -254,7 +256,7 @@ parseError tokens = error $ "Parse error" ++ show tokens
 
 parseTokens tokenStream = (typeTable, cTable, gSymTable, sp, fDecl, main)
   where
-    ((typeTable, cTable, sp, fDecl, main), (gSymTable, _, _, _, _)) = runState (parse tokenStream) startState
+    ((typeTable, cTable, sp, fDecl, main), (gSymTable, _, _, _, _, _)) = runState (parse tokenStream) startState
 
 type Program = (TypeTable, (ClassTable, [FDefinition]), Int, [FDefinition], (SymbolTable, Node))
 }
