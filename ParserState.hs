@@ -55,6 +55,13 @@ doLDecl decls = do
     put (gSymbolTable, lSymbolTable, tTable, cTable, cTable2, lab)
     return lSymbolTable
 
+doMDecl :: [(String, [String])] -> State ParserState SymbolTable
+doMDecl decls = do
+    (gSymbolTable, lArgTable, tTable, cTable, cTable2, lab) <- get
+    let lDeclTable = genLSymbolTable decls
+    put (gSymbolTable, lDeclTable, tTable, cTable, cTable2, lab)
+    return lDeclTable
+
 doPDecl :: [(String, String)] -> State ParserState [(String, String)]
 doPDecl params = do
     (gSymbolTable, _, tTable, cTable, cTable2, lab) <- get
@@ -107,6 +114,8 @@ nodeToType x = do
                                         Just f -> return (fieldType (typeFields f! field))
          NodeClassFnCall var _ -> nodeToType var
          NodeSelf -> return $ head $ keys currClass
+         NodeArray var _ -> nodeToType (NodeVar var)
+         v -> error $show v
 
 opTypeCheck :: String -> Node -> Node -> State ParserState Node
 opTypeCheck op n1 n2 = do

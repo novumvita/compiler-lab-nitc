@@ -82,6 +82,7 @@ getMem (NodeArray var indexes) state = do
     (indexRegs, newstate1) <- evalIndexes indexes [] newstate
     aNL $ "MOV R" ++ show reg ++ ", 0"
     newstate2 <- findOffset reg (varSize sym) indexRegs newstate1
+    aNL $ "ADD R" ++ show reg ++ ", " ++ show (sp state - 1)
     aNL $ "ADD R" ++ show reg ++ ", " ++ show (varBinding sym)
     return (newstate2, reg)
     where varlist = gSymbolTable state
@@ -105,6 +106,7 @@ getMem f state = error $ show f
 getType :: Node -> State -> String
 getType (NodePtr var) state = getType var state
 getType (NodeVar var) state = varType (getSymbol var state)
+getType (NodeArray var _) state = getType (NodeVar var) state
 getType (NodeField var field) state = case tLookup of
     Just f -> fieldtype
           where varfields = typeFields f
@@ -316,7 +318,9 @@ evalStmt (NodeAssg leftNode rightNode) state = do
     (rstate, rightVal) <- evalExp rightNode newstate
     case tlook of
         Just f -> do
+            aNL "BRKP"
             aNL $ "MOV [R" ++ show memreg ++ "], R" ++ show rightVal
+            aNL "BRKP"
         Nothing -> do
             (rstate, rightreg) <- getMem rightNode newstate
             aNL $ "MOV [R" ++ show memreg ++ "], [R" ++ show rightreg ++ "]"
@@ -375,6 +379,7 @@ evalStmt (NodeRead var) state = do
     aNL $ "PUSH R" ++ show reg
     aNL $ "MOV R" ++ show reg ++ ", -1"
     aNL $ "PUSH R" ++ show reg
+    aNL "BRKP"
     aNL $ "MOV R" ++ show reg ++ ", R" ++ show memreg
     aNL $ "PUSH R" ++ show reg
     aNL $ "PUSH R" ++ show reg
@@ -386,6 +391,7 @@ evalStmt (NodeRead var) state = do
     aNL $ "POP R" ++ show reg
     aNL $ "POP R" ++ show reg
     popRegs state
+    aNL "BRKP"
     return state
 
 -- evalStmt (NodeWrite (NodeField v f)) state = evalStmt (NodeWrite (NodePtr (NodeField v f))) state
@@ -533,7 +539,7 @@ fnCodeGen fdef state = do
     -- print $ fSymbolTable fdef
     -- print "FAST: "
     -- print $ fAST fdef
-    -- aNL $ "F" ++ show (funcLabel func) ++ ":"
+    aNL $ "F" ++ show (funcLabel func) ++ ":"
     aNL "PUSH BP"
     aNL "MOV BP, SP"
     aNL $ "ADD SP, " ++ show lVarCount
@@ -627,10 +633,10 @@ main = do
     -- print $ "CFDEF: " ++ show cFDefs
     -- print $ "FDEF: " ++ show fDef
     -- print $ "CTABLE: " ++ show cTable
-    -- print $ "GSYMTABLE: " ++ show gSymTable
+    print $ "GSYMTABLE: " ++ show gSymTable
     -- print $ "TTABLE: " ++ show typeTable
     -- print $ "MAINSYMTABLE: " ++ show mainSymbols
-    -- print $ "MAINAST: " ++ show mainAST
+    print $ "MAINAST: " ++ show mainAST
     writeFile "file.txt" "0\n2056\n0\n0\n0\n0\n0\n0\n"
     mapM_ (vFTCodeGen cTable) (keys cTable)
     newstate <- mainCodeGen mainAST state newSP

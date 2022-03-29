@@ -247,7 +247,11 @@ Exp : Exp '+' Exp                                                           { % 
     | Function                                                              { $1 }
     | null                                                                  { NodeNull }
 
-MainBlock : int main '(' ')' '{' LDeclBlock FBody '}'                       { ($6, $7) }
+MDeclBlock : decl LDeclList enddecl                                         { % doMDecl $2 }
+           | decl enddecl                                                   { % doMDecl [] }
+           | {- no local declarations -}                                    { % doMDecl [] }
+
+MainBlock : int main '(' ')' '{' MDeclBlock FBody '}'                       { ($6, $7) }
 
 {
 
