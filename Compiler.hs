@@ -82,7 +82,7 @@ getMem (NodeArray var indexes) state = do
     (indexRegs, newstate1) <- evalIndexes indexes [] newstate
     aNL $ "MOV R" ++ show reg ++ ", 0"
     newstate2 <- findOffset reg (varSize sym) indexRegs newstate1
-    aNL $ "ADD R" ++ show reg ++ ", " ++ show (sp state - 1)
+    aNL $ "ADD R" ++ show reg ++ ", " ++ show (sp state - product (varSize sym) + 1)
     aNL $ "ADD R" ++ show reg ++ ", " ++ show (varBinding sym)
     return (newstate2, reg)
     where varlist = gSymbolTable state
